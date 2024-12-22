@@ -7,5 +7,5 @@ import (
 
 func TestIngestFromOwlRepo(t *testing.T) {
 	utils.LoadEnv("../back.env", true)
-	IngestFromOwlRepo()
+	Ingest()
 }

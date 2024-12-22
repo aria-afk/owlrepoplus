@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"owlrepo/pg"
 	"sync"
 
 	"github.com/montanaflynn/stats"
@@ -127,16 +128,6 @@ func (c *Cache) get(key string) FormattedCachePayload {
 	result.MinPrice = minp
 	result.MaxPrice = maxp
 
-	// TESTING: remove
-	fmt.Printf("min: %d\n max: %d\n p25: %d\n p50: %d\n p75: %d\n meta: %+v\n",
-		result.MinPrice,
-		result.MaxPrice,
-		result.P25Price,
-		result.P50Price,
-		result.P75Price,
-		result.Meta,
-	)
-
 	return result
 }
 
@@ -151,7 +142,7 @@ func GetAndDecode(url string, target any) error {
 
 func IngestFromOwlRepo() error {
 	c := NewCache()
-	//	db := pg.NewPG()
+	db := pg.NewPG()
 
 	// This is the main entry point to thier search "index" (loaded on owlrepo.com/items)
 	baseUrl := "https://storage.googleapis.com/owlrepo/v1/queries/search_item_listing.json"
@@ -168,11 +159,9 @@ func IngestFromOwlRepo() error {
 	entryCount := len(searchEntries)
 	indexEntries := make(chan IndexEntryReponse, entryCount)
 
+	workCount := len(searchEntries)
 	for i, entry := range searchEntries {
-		// TESTING: REMOVE ME
-		if i > 1 {
-			break
-		}
+		fmt.Printf("\r %d / %d items to do                                                       ", i, workCount)
 		url := "https://storage.googleapis.com/owlrepo/v1/uploads/" + entry.TaskId + "/slim.json"
 		sem <- 1
 		wg.Add(1)
@@ -195,10 +184,7 @@ func IngestFromOwlRepo() error {
 	close(indexEntries)
 
 	for e := range indexEntries {
-		for i, p := range e.Payload {
-			if i > 1 {
-				break
-			}
+		for _, p := range e.Payload {
 			for _, b := range p.Body.Entries {
 				wg.Add(1)
 				sem <- 1
@@ -219,9 +205,42 @@ func IngestFromOwlRepo() error {
 
 	wg.Wait()
 
+	fmt.Println("hi there fren")
+
 	for item := range c.Store {
-		// TODO: make this a routine once done testing
-		c.get(item)
+		paylod := c.get(item)
+
+		_, err := db.Conn.Exec(`INSERT INTO items (id) VALUES ($1) ON CONFLICT DO NOTHING`, item)
+		if err != nil {
+			fmt.Println(err)
+		}
+		_, err = db.Conn.Exec(`INSERT INTO item_meta (item_id, time, min_price, p25_price, p50_price, p75_price, max_price) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			item,
+			paylod.Timestamp,
+			paylod.MinPrice,
+			paylod.P25Price,
+			paylod.P50Price,
+			paylod.P75Price,
+			paylod.MaxPrice,
+		)
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		for _, se := range paylod.Meta {
+			_, err = db.Conn.Exec(`INSERT INTO item_meta_recents (item_id, time, owner, store_name, bundle, price, quantity) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+				item,
+				paylod.Timestamp,
+				se.Id,
+				se.StoreName,
+				se.Bundle,
+				se.Price,
+				se.Quantity,
+			)
+			if err != nil {
+				fmt.Println(err)
+			}
+		}
 	}
 
 	return nil
