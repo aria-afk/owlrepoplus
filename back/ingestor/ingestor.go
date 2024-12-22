@@ -5,9 +5,11 @@ package ingestor
 import (
 	"encoding/json"
 	"fmt"
-	_ "fmt"
+	"math"
 	"net/http"
 	"sync"
+
+	"github.com/montanaflynn/stats"
 )
 
 // A singular entry representing the JSON format from owlrepo.com/items
@@ -41,6 +43,7 @@ type IndexEntryPayload struct {
 }
 
 type StoreItemEntry struct {
+	Id        string
 	StoreName string
 	Bundle    int
 	Price     int
@@ -79,6 +82,64 @@ func (c *Cache) write(wg *sync.WaitGroup, itemName string, timestamp string, id 
 	c.Store[itemName][timestamp][id] = payload
 }
 
+type FormattedCachePayload struct {
+	Timestamp string
+	MinPrice  int
+	P25Price  int
+	P50Price  int
+	P75Price  int
+	MaxPrice  int
+	Meta      []StoreItemEntry
+}
+
+func (c *Cache) get(key string) FormattedCachePayload {
+	m := c.Store[key]
+
+	result := FormattedCachePayload{Meta: make([]StoreItemEntry, 0)}
+	minp := math.MaxInt
+	maxp := math.MinInt
+	prices := make([]int, 0)
+
+	for timestamp, idMap := range m {
+		if result.Timestamp == "" {
+			result.Timestamp = timestamp
+		}
+		for _, entry := range idMap {
+			result.Meta = append(result.Meta, entry)
+
+			if entry.Price > maxp {
+				maxp = entry.Price
+			}
+			if entry.Price < minp {
+				minp = entry.Price
+			}
+
+			prices = append(prices, entry.Price)
+		}
+	}
+	p25, _ := stats.PercentileNearestRank(stats.LoadRawData(prices), 25)
+	p50, _ := stats.PercentileNearestRank(stats.LoadRawData(prices), 50)
+	p75, _ := stats.PercentileNearestRank(stats.LoadRawData(prices), 50)
+
+	result.P25Price = int(p25)
+	result.P50Price = int(p50)
+	result.P75Price = int(p75)
+	result.MinPrice = minp
+	result.MaxPrice = maxp
+
+	// TESTING: remove
+	fmt.Printf("min: %d\n max: %d\n p25: %d\n p50: %d\n p75: %d\n meta: %+v\n",
+		result.MinPrice,
+		result.MaxPrice,
+		result.P25Price,
+		result.P50Price,
+		result.P75Price,
+		result.Meta,
+	)
+
+	return result
+}
+
 func GetAndDecode(url string, target any) error {
 	resp, err := http.Get(url)
 	if err != nil {
@@ -90,6 +151,8 @@ func GetAndDecode(url string, target any) error {
 
 func IngestFromOwlRepo() error {
 	c := NewCache()
+	//	db := pg.NewPG()
+
 	// This is the main entry point to thier search "index" (loaded on owlrepo.com/items)
 	baseUrl := "https://storage.googleapis.com/owlrepo/v1/queries/search_item_listing.json"
 	searchEntries := make([]SearchIndexEntry, 0)
@@ -120,7 +183,7 @@ func IngestFromOwlRepo() error {
 			var ier IndexEntryReponse
 			err := GetAndDecode(url, &ier)
 			if err != nil {
-				// TODO: Error handling
+				// TODO: Error handling maybe if we have > X errors we panic
 				fmt.Print(err)
 			}
 
@@ -142,6 +205,7 @@ func IngestFromOwlRepo() error {
 				go func() {
 					defer func() { <-sem }()
 					payload := StoreItemEntry{
+						Id:        b.Id,
 						StoreName: b.StoreName,
 						Bundle:    b.Bundle,
 						Price:     b.Price,
@@ -155,7 +219,10 @@ func IngestFromOwlRepo() error {
 
 	wg.Wait()
 
-	fmt.Print(c.Store)
+	for item := range c.Store {
+		// TODO: make this a routine once done testing
+		c.get(item)
+	}
 
 	return nil
 }
