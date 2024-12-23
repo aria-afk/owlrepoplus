@@ -131,9 +131,10 @@ func ProcessTaskIdMeta(wg *sync.WaitGroup, sem <-chan int, errorc chan<- error, 
 	}
 
 	/*
-		    *   FIXME: okay so at this point there is not a guarentee the related item (id) exists...
-		*      this is kind of odd and a problem... maybe they dont have every item in the search_index?
-		*      TODO: deque these into some kind of storage and process afterward...
+				    *   FIXME: okay so at this point there is not a guarentee the related item (id) exists...
+				*      this is kind of odd and a problem... maybe they dont have every item in the search_index?
+				*      TODO: deque these into some kind of storage and process afterward...
+		*               NOTE: this could also just be a string formatting issue.
 	*/
 }
 
