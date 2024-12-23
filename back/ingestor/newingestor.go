@@ -1,7 +1,6 @@
 package ingestor
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -81,7 +80,7 @@ func Ingest() {
 	var wg sync.WaitGroup
 	sem := make(chan int, 20)
 	taskIdResponses := make(chan TaskIdResponse, sirLen)
-	taskIdErrors := make(chan error, sirLen)
+	taskIdErrors := make(chan error, sirLen*2)
 
 	for i, sir := range searchIndexResults {
 		// TESTING: Remove
@@ -92,22 +91,7 @@ func Ingest() {
 
 		wg.Add(1)
 		sem <- 1
-		/*
-			go func() {
-				defer wg.Done()
-				defer func() { <-sem }()
-
-				tir := TaskIdResponse{}
-				taskIdUrl := "https://storage.googleapis.com/owlrepo/v1/uploads/" + sir.TaskId + "/slim.json"
-				err := httpGet(taskIdUrl, &tir)
-				if err != nil {
-					taskIdErrors <- err
-					return
-				}
-				taskIdReponses <- tir
-			}()
-		*/
-		go ProcessSearchIndexResult(&wg, sem, taskIdErrors, taskIdResponses, db.Conn, sir)
+		go ProcessSearchIndexResult(&wg, sem, taskIdErrors, taskIdResponses, db, sir)
 	}
 
 	wg.Wait()
@@ -118,26 +102,44 @@ func Ingest() {
 		panic("Error rate from index > 10% time to debug")
 	}
 
-	for tir := range taskIdResponses {
-		for _, tiEntry := range tir.Payload {
-			fmt.Println(tiEntry)
+	/*
+		for tir := range taskIdResponses {
+			for _, tiEntry := range tir.Payload {
+			}
 		}
-	}
+	*/
 }
 
-// ProcessSearchIndexResult: Used inside main iterater loop over searchIndexResults to dispatch multiple tasks
+// ProcessSearchIndexResult: Used inside main loop over searchIndexResults to dispatch multiple tasks
 // 1) upsert current SearchIndexResult to database
 // 2) retrieve slim.json from given items TaskID and send to chan
-func ProcessSearchIndexResult(wg *sync.WaitGroup, sem <-chan int, errorc chan<- error, taskIdRespc chan<- TaskIdResponse, db *sql.DB, sir SearchIndexResponse) {
+func ProcessSearchIndexResult(wg *sync.WaitGroup, sem <-chan int, errorc chan<- error, taskIdRespc chan<- TaskIdResponse, db *pg.PG, sir SearchIndexResponse) {
 	defer wg.Done()
 	defer func() { <-sem }()
 
 	// Upsert current SearchIndexResponse to db
+	fmt.Println(db.QueryMap)
+
+	err := db.Exec("upsert_item",
+		sir.SearchItem,
+		sir.P0,
+		sir.P25,
+		sir.P50,
+		sir.P75,
+		sir.P100,
+		sir.Mean,
+		sir.Std,
+		sir.NOweled,
+	)
+	if err != nil {
+		errorc <- err
+		fmt.Println(err)
+	}
 
 	// Retrieve slim.json from items task id and dispatch to chan
 	tir := TaskIdResponse{}
 	taskIdUrl := "https://storage.googleapis.com/owlrepo/v1/uploads/" + sir.TaskId + "/slim.json"
-	err := httpGet(taskIdUrl, &tir)
+	err = httpGet(taskIdUrl, &tir)
 	if err != nil {
 		errorc <- err
 		return
